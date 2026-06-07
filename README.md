@@ -4,7 +4,15 @@
 
 ## 🌐 在线访问
 
-- **网址**: http://49.234.51.29:8088
+| 环境 | 地址 | 状态 |
+|------|------|------|
+| **公网** | **http://49.234.51.29:8088** | ✅ 当前生产 |
+| 内网 | http://10.0.0.14:8088 | ✅ 同机直连 |
+| 健康检查 | http://49.234.51.29:8088/api/health | ✅ |
+
+- 服务器：腾讯云 CVM `49.234.51.29`
+- 部署路径：`~/apps/lab-codoc`
+- 启动方式：`NODE_ENV=production node server/index.js`（监听 `0.0.0.0:8088`）
 
 ## ✨ 功能特性
 
@@ -166,6 +174,40 @@ A: 理论无上限，实测 10+ 人同时编辑流畅。
 
 **Q: 如何导出文档？**
 A: 各编辑器支持导出为对应格式（MD/XLSX/PPTX）。
+
+## 🔧 运维（生产部署后）
+
+### 重启服务
+
+```bash
+# 找到进程
+ps -ef | grep "node server/index.js" | grep -v grep
+
+# 优雅停止（会触发 SIGTERM 处理）
+kill <PID>
+
+# 启动
+cd ~/apps/lab-codoc
+NODE_ENV=production nohup node server/index.js > server.log 2>&1 &
+```
+
+### 验证部署
+
+```bash
+curl http://49.234.51.29:8088/api/health
+# {"status":"ok","uptime":...}
+```
+
+### 备份
+
+```bash
+# 停服 → 拷贝 DB → 起服（最安全）
+cp ~/apps/lab-codoc/server/data/codoc.db ~/backups/codoc-$(date +%F).db
+```
+
+### 公网端口
+
+腾讯云 CVM 安全组需放行 TCP 8088（入站）。
 
 ## 🗺 路线图
 
