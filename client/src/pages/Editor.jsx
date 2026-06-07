@@ -26,53 +26,67 @@ function DocumentEditor() {
   const userIdRef = useRef(`user_${Math.random().toString(36).substr(2, 9)}`);
 
   // Fetch document on mount
-  
-
-  // Socket event handlers
-  useEffect(() => { setLoading(true);
-    socket.on('sync:state', (state) => {
-      setConnectedUsers(state.users || []);
-      setCollaborators(state.users || []);
-      if (state.content !== undefined) {
-        setContent(state.content);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const d = await api('/documents/' + id);
+        if (cancelled) return;
+        setDoc(d);
+        setTitle(d.title || '');
+        setContent(d.content || '');
+      } catch (e) {
+        if (!cancelled) toast.error(e.message);
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-    });
+    })();
+    return () => { cancelled = true; };
+  }, [id]);
 
-    socket.on('user:join', (user) => {
+  // Socket event handlers — join the document room, listen for live updates
+  useEffect(() => {
+    socket.emit('join', { documentId: id });
+
+    const onSync = (state) => {
+      setConnectedUsers(state.users || []);
+      if (state.content !== undefined && state.read_only) setContent(state.content);
+    };
+    const onJoin = (user) => {
       setConnectedUsers(prev => [...prev.filter(u => u.id !== user.id), user]);
       toast(`${user.name} joined`, { icon: '👋' });
-    });
-
-    socket.on('user:leave', ({ user }) => {
+    };
+    const onLeave = ({ user }) => {
       setConnectedUsers(prev => prev.filter(u => u.id !== user.id));
-    });
+    };
+    const onContent = ({ content: newContent, userId }) => {
+      if (userId !== userIdRef.current) setContent(newContent);
+    };
+    const onDocUpdate = (d) => {
+      if (d.id === id && d.title !== title) setTitle(d.title);
+    };
+    const onDocDelete = () => { toast.success('Document was deleted'); navigate('/'); };
+    const onJoinErr = (e) => { toast.error(e.error || 'cannot join'); navigate('/'); };
 
-    socket.on('content:update', ({ content: newContent, userId }) => {
-      if (userId !== userIdRef.current) {
-        setContent(newContent);
-      }
-    });
-
-    socket.on('document:update', (doc) => {
-      if (doc.id === id && doc.title !== title) {
-        setTitle(doc.title);
-      }
-    });
-
-    socket.on('document:delete', () => {
-      toast.success('Document was deleted');
-      navigate('/');
-    });
+    socket.on('sync:state', onSync);
+    socket.on('user:join', onJoin);
+    socket.on('user:leave', onLeave);
+    socket.on('content:update', onContent);
+    socket.on('document:update', onDocUpdate);
+    socket.on('document:delete', onDocDelete);
+    socket.on('join:error', onJoinErr);
 
     return () => {
-      socket.off('sync:state');
-      socket.off('user:join');
-      socket.off('user:leave');
-      socket.off('content:update');
-      socket.off('document:update');
-      socket.off('document:delete');
+      socket.emit('leave');
+      socket.off('sync:state', onSync);
+      socket.off('user:join', onJoin);
+      socket.off('user:leave', onLeave);
+      socket.off('content:update', onContent);
+      socket.off('document:update', onDocUpdate);
+      socket.off('document:delete', onDocDelete);
+      socket.off('join:error', onJoinErr);
     };
-  }, []);
+  }, [id, title, navigate]);
 
   // Auto-save with debounce
   const handleContentChange = useCallback((newContent) => {
