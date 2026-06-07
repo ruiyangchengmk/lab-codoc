@@ -3,18 +3,21 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { io } from 'socket.io-client';
 import toast from 'react-hot-toast';
 import Editor from '@monaco-editor/react';
-import { useDocumentStore } from '../store/documentStore';
+import { api, useAuth } from '../store/auth';
 import MarkdownEditor from '../components/MarkdownEditor';
 import ExcelEditor from '../components/ExcelEditor';
 import SlideEditor from '../components/SlideEditor';
 
+// socket.io picks up session cookie automatically (server reads lc_session)
 const socket = io();
 
 function DocumentEditor() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { currentDocument, fetchDocument, updateDocument, collaborators, setCollaborators } = useDocumentStore();
-  
+  const { user, logout } = useAuth();
+  const [doc, setDoc] = useState(null);
+  const [loading, setLoading] = useState(true);
+
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
   const [isSaving, setIsSaving] = useState(false);
@@ -23,31 +26,10 @@ function DocumentEditor() {
   const userIdRef = useRef(`user_${Math.random().toString(36).substr(2, 9)}`);
 
   // Fetch document on mount
-  useEffect(() => {
-    if (id) {
-      fetchDocument(id);
-    }
-    return () => {
-      socket.emit('leave');
-    };
-  }, [id]);
-
-  // Update local state when document changes
-  useEffect(() => {
-    if (currentDocument) {
-      setTitle(currentDocument.title || '');
-      setContent(currentDocument.content || '');
-      
-      // Join collaboration room
-      socket.emit('join', {
-        documentId: id,
-        user: { id: userIdRef.current, name: `User ${userIdRef.current.slice(-4)}` }
-      });
-    }
-  }, [currentDocument, id]);
+  
 
   // Socket event handlers
-  useEffect(() => {
+  useEffect(() => { setLoading(true);
     socket.on('sync:state', (state) => {
       setConnectedUsers(state.users || []);
       setCollaborators(state.users || []);
@@ -107,14 +89,14 @@ function DocumentEditor() {
     setIsSaving(true);
     saveTimeoutRef.current = setTimeout(async () => {
       try {
-        await updateDocument(id, { content: newContent });
+        await api('/documents/' + id, { method: 'PUT', body: JSON.stringify({ content: newContent }) });
         setIsSaving(false);
       } catch (error) {
         toast.error('Failed to save');
         setIsSaving(false);
       }
     }, 1000);
-  }, [id, updateDocument]);
+  }, [id]);
 
   const handleTitleChange = useCallback(async (newTitle) => {
     setTitle(newTitle);
@@ -125,17 +107,17 @@ function DocumentEditor() {
     
     saveTimeoutRef.current = setTimeout(async () => {
       try {
-        await updateDocument(id, { title: newTitle });
+        await api('/documents/' + id, { method: 'PUT', body: JSON.stringify({ title: newTitle }) });
       } catch (error) {
         toast.error('Failed to save title');
       }
     }, 500);
-  }, [id, updateDocument]);
+  }, [id]);
 
   const handleExport = async () => {
     try {
       // For Markdown, download as .md file directly
-      if (currentDocument.type === 'markdown') {
+      if (doc.type === 'markdown') {
         const blob = new Blob([content], { type: 'text/markdown' });
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -158,7 +140,7 @@ function DocumentEditor() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      const ext = currentDocument.type === 'excel' ? 'xlsx' : 'pptx';
+      const ext = doc.type === 'excel' ? 'xlsx' : 'pptx';
       a.download = `${title || 'document'}.${ext}`;
       document.body.appendChild(a);
       a.click();
@@ -170,7 +152,7 @@ function DocumentEditor() {
     }
   };
 
-  if (!currentDocument) {
+  if (!doc) {
     return (
       <div className="app">
         <header className="header">
@@ -188,6 +170,16 @@ function DocumentEditor() {
         <nav className="header-nav">
           <Link to="/">← Back to Documents</Link>
         </nav>
+        <div style={{ flex: 1 }} />
+        <span style={{ marginRight: 12, color: 'var(--text-secondary)', fontSize: 14 }}>
+          {user?.display_name || user?.username}
+        </span>
+        <button
+          className="btn btn-secondary"
+          onClick={async () => { await logout(); navigate('/login'); }}
+        >
+          Sign out
+        </button>
       </header>
 
       <div className="editor-container">
@@ -206,12 +198,12 @@ function DocumentEditor() {
               fontSize: '11px', 
               fontWeight: 600,
               textTransform: 'uppercase',
-              background: currentDocument.type === 'markdown' ? '#dbeafe' : 
-                         currentDocument.type === 'excel' ? '#dcfce7' : '#fef3c7',
-              color: currentDocument.type === 'markdown' ? '#1e40af' :
-                     currentDocument.type === 'excel' ? '#166534' : '#92400e'
+              background: doc.type === 'markdown' ? '#dbeafe' : 
+                         doc.type === 'excel' ? '#dcfce7' : '#fef3c7',
+              color: doc.type === 'markdown' ? '#1e40af' :
+                     doc.type === 'excel' ? '#166534' : '#92400e'
             }}>
-              {currentDocument.type}
+              {doc.type}
             </span>
             {isSaving && <span style={{ color: 'var(--text-secondary)', fontSize: '12px' }}>Saving...</span>}
           </div>
@@ -242,19 +234,19 @@ function DocumentEditor() {
         </div>
 
         <div className="editor-content">
-          {currentDocument.type === 'markdown' && (
+          {doc.type === 'markdown' && (
             <MarkdownEditor 
               content={content} 
               onChange={handleContentChange} 
             />
           )}
-          {currentDocument.type === 'excel' && (
+          {doc.type === 'excel' && (
             <ExcelEditor 
               content={content} 
               onChange={handleContentChange} 
             />
           )}
-          {currentDocument.type === 'ppt' && (
+          {doc.type === 'ppt' && (
             <SlideEditor 
               content={content} 
               onChange={handleContentChange} 
