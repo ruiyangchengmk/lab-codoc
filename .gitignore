@@ -44,3 +44,9 @@ build/
 # Database
 *.db
 *.sqlite
+*.db-shm
+*.db-wal
+*.sqlite-shm
+*.sqlite-wal
+data/*.db*
+server/data/*.db*
