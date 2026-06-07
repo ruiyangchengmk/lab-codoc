@@ -75,4 +75,4 @@ function requireAdmin(req, res, next) {
   next();
 }
 
-module.exports = { authMiddleware, requireAuth, requireAdmin, issueCookie, clearCookie };
+module.exports = { authMiddleware, requireAuth, requireAdmin, issueCookie, clearCookie, verify };
