@@ -41,6 +41,10 @@ function setupYjsServer(io) {
       }
       currentDocId = documentId;
       const slot = getYDoc(documentId);
+      // Lazy-load content from DB into Y.Doc the first time this room is touched
+      if (slot.doc.getText('content').length === 0 && d.content) {
+        slot.doc.getText('content').insert(0, d.content);
+      }
       const userInfo = { id: u.id, name: u.display_name || u.username, color: '#3b82f6', is_admin: !!u.is_admin, cursor: null };
       slot.users.set(socket.id, userInfo);
       socket.join('doc:' + documentId);
@@ -95,6 +99,18 @@ function setupYjsServer(io) {
         setTimeout(() => {
           if (slot.users.size === 0) docs.delete(currentDocId);
         }, 60_000);
+      }
+    });
+
+    // Explicit leave (client emits on unmount)
+    socket.on('leave', () => {
+      if (currentDocId) {
+        const slot = getYDoc(currentDocId);
+        const ui = slot.users.get(socket.id);
+        slot.users.delete(socket.id);
+        if (ui) socket.to('doc:' + currentDocId).emit('user:leave', { userId: socket.id, user: ui });
+        currentDocId = null;
+        currentUserId = null;
       }
     });
   });
