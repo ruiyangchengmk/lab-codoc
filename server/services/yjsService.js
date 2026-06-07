@@ -1,159 +1,104 @@
 const Y = require('yjs');
-const { v4: uuidv4 } = require('uuid');
+const { DocumentModel } = require('../models/document');
+const { User } = require('../models/user');
+const { verify } = require('../middleware/auth');
 
-// Store for Yjs documents and awareness
 const docs = new Map();
 
 function getYDoc(documentId) {
   if (!docs.has(documentId)) {
     const doc = new Y.Doc();
-    docs.set(documentId, {
-      doc,
-      awareness: new Map(),
-      users: new Map()
-    });
+    docs.set(documentId, { doc, users: new Map() });
   }
   return docs.get(documentId);
 }
 
 function setupYjsServer(io) {
+  io.use((socket, next) => {
+    // Read session cookie from the upgrade request (socket.io forwards it).
+    const cookieHeader = socket.handshake.headers.cookie || '';
+    const m = cookieHeader.match(/(?:^|;\s*)lc_session=([^;]+)/);
+    const token = m ? m[1] : null;
+    const payload = verify(token);
+    if (!payload) return next(new Error('unauthorized'));
+    const u = User.byId(payload.uid);
+    if (!u) return next(new Error('unauthorized'));
+    socket.user = u;
+    next();
+  });
+
   io.on('connection', (socket) => {
-    console.log(`Client connected: ${socket.id}`);
-    
+    console.log(`WS connect ${socket.id} (user=${socket.user.username})`);
     let currentDocId = null;
-    let currentUserId = null;
+    let currentUserId = socket.user.id;
 
-    // Join a document room
-    socket.on('join', ({ documentId, user }) => {
+    socket.on('join', ({ documentId }) => {
+      const d = DocumentModel.findById(documentId);
+      const u = socket.user;
+      if (!d || !(u.is_admin || d.owner_id === u.id)) {
+        socket.emit('join:error', { error: 'no access' });
+        return;
+      }
       currentDocId = documentId;
-      currentUserId = user?.id || uuidv4();
-      
-      const { doc, users } = getYDoc(documentId);
-      const userInfo = {
-        id: currentUserId,
-        name: user?.name || 'Anonymous',
-        color: user?.color || '#3b82f6',
-        cursor: null
-      };
-      
-      users.set(socket.id, userInfo);
-      socket.join(`doc:${documentId}`);
-      
-      // Send current document state
-      const state = {
-        users: Array.from(users.values()),
-        content: doc.getText('content').toString()
-      };
-      socket.emit('sync:state', state);
-      
-      // Notify others
-      socket.to(`doc:${documentId}`).emit('user:join', userInfo);
-      
-      console.log(`User ${userInfo.name} joined document ${documentId}`);
+      const slot = getYDoc(documentId);
+      const userInfo = { id: u.id, name: u.display_name || u.username, color: '#3b82f6', is_admin: !!u.is_admin, cursor: null };
+      slot.users.set(socket.id, userInfo);
+      socket.join('doc:' + documentId);
+      socket.emit('sync:state', { users: Array.from(slot.users.values()), content: slot.doc.getText('content').toString(), read_only: !(u.is_admin || d.owner_id === u.id) });
+      socket.to('doc:' + documentId).emit('user:join', userInfo);
     });
 
-    // Handle text updates (for non-Yjs fallback or initial sync)
+    function writable() {
+      if (!currentDocId) return false;
+      const d = DocumentModel.findById(currentDocId);
+      return d && (socket.user.is_admin || d.owner_id === socket.user.id);
+    }
+
     socket.on('content:update', ({ content }) => {
-      if (!currentDocId) return;
-      
-      const { doc } = getYDoc(currentDocId);
-      const yText = doc.getText('content');
-      
-      doc.transact(() => {
-        yText.delete(0, yText.length);
-        yText.insert(0, content);
-      });
-      
-      // Broadcast to others in the room
-      socket.to(`doc:${currentDocId}`).emit('content:update', { content, userId: currentUserId });
+      if (!writable()) return;
+      const slot = getYDoc(currentDocId);
+      const t = slot.doc.getText('content');
+      slot.doc.transact(() => { t.delete(0, t.length); t.insert(0, content); });
+      socket.to('doc:' + currentDocId).emit('content:update', { content, userId: currentUserId });
     });
-
-    // Handle Yjs awareness updates (cursor positions, user presence)
     socket.on('awareness:update', (update) => {
       if (!currentDocId) return;
-      
-      const { awareness, users } = getYDoc(currentDocId);
-      const userInfo = users.get(socket.id);
-      
-      if (userInfo) {
-        awareness.set(socket.id, { ...userInfo, ...update });
-        
-        socket.to(`doc:${currentDocId}`).emit('awareness:update', {
-          userId: socket.id,
-          update
-        });
-      }
+      const slot = getYDoc(currentDocId);
+      const ui = slot.users.get(socket.id);
+      if (ui) slot.users.set(socket.id, { ...ui, ...update });
+      socket.to('doc:' + currentDocId).emit('awareness:update', { userId: socket.id, update });
     });
-
-    // Handle cursor position updates
     socket.on('cursor:move', ({ position }) => {
       if (!currentDocId) return;
-      
-      const { awareness, users } = getYDoc(currentDocId);
-      const userInfo = users.get(socket.id);
-      
-      if (userInfo) {
-        userInfo.cursor = position;
-        awareness.set(socket.id, userInfo);
-        
-        socket.to(`doc:${currentDocId}`).emit('cursor:move', {
-          userId: socket.id,
-          user: userInfo,
-          position
-        });
-      }
+      const slot = getYDoc(currentDocId);
+      const ui = slot.users.get(socket.id);
+      if (ui) { ui.cursor = position; slot.users.set(socket.id, ui); }
+      socket.to('doc:' + currentDocId).emit('cursor:move', { userId: socket.id, user: ui, position });
     });
-
-    // Handle document updates from Yjs
     socket.on('yjs:update', (update) => {
-      if (!currentDocId) return;
-      
-      const { doc } = getYDoc(currentDocId);
-      Y.applyUpdate(doc, new Uint8Array(update));
-      
-      // Broadcast to others
-      socket.to(`doc:${currentDocId}`).emit('yjs:update', update);
+      if (!writable()) return;
+      const slot = getYDoc(currentDocId);
+      Y.applyUpdate(slot.doc, new Uint8Array(update));
+      socket.to('doc:' + currentDocId).emit('yjs:update', update);
     });
-
-    // Request sync from server
     socket.on('sync:request', () => {
       if (!currentDocId) return;
-      
-      const { doc } = getYDoc(currentDocId);
-      const state = Y.encodeStateAsUpdate(doc);
-      socket.emit('yjs:update', Array.from(state));
+      socket.emit('yjs:update', Array.from(Y.encodeStateAsUpdate(getYDoc(currentDocId).doc)));
     });
 
-    // Disconnect
     socket.on('disconnect', () => {
       if (currentDocId) {
-        const { users, awareness } = getYDoc(currentDocId);
-        const userInfo = users.get(socket.id);
-        
-        users.delete(socket.id);
-        awareness.delete(socket.id);
-        
-        if (userInfo) {
-          socket.to(`doc:${currentDocId}`).emit('user:leave', {
-            userId: socket.id,
-            user: userInfo
-          });
-        }
-        
-        console.log(`User ${userInfo?.name || socket.id} left document ${currentDocId}`);
-        
-        // Clean up empty documents after a delay
+        const slot = getYDoc(currentDocId);
+        const ui = slot.users.get(socket.id);
+        slot.users.delete(socket.id);
+        if (ui) socket.to('doc:' + currentDocId).emit('user:leave', { userId: socket.id, user: ui });
         setTimeout(() => {
-          const { users } = getYDoc(currentDocId);
-          if (users.size === 0) {
-            docs.delete(currentDocId);
-          }
-        }, 60000); // Keep for 1 minute in case of reconnection
+          if (slot.users.size === 0) docs.delete(currentDocId);
+        }, 60_000);
       }
-      
-      console.log(`Client disconnected: ${socket.id}`);
     });
   });
 }
 
 module.exports = { setupYjsServer };
+
