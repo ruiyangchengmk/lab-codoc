@@ -8,16 +8,16 @@ const DocumentType = {
 };
 
 class DocumentModel {
-  static create({ title = 'Untitled', type = DocumentType.MARKDOWN, content = '', createdBy = 'anonymous' }) {
+  static create({ title = 'Untitled', type = DocumentType.MARKDOWN, content = '', createdBy = 'anonymous', ownerId = null }) {
     const db = getDb();
     const id = uuidv4();
-    
+
     const stmt = db.prepare(`
-      INSERT INTO documents (id, title, type, content, created_by)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO documents (id, title, type, content, created_by, owner_id)
+      VALUES (?, ?, ?, ?, ?, ?)
     `);
-    
-    stmt.run(id, title, type, content, createdBy);
+
+    stmt.run(id, title, type, content, createdBy, ownerId);
     return this.findById(id);
   }
 
@@ -27,35 +27,39 @@ class DocumentModel {
     return stmt.get(id);
   }
 
-  static findAll({ type = null, limit = 100, offset = 0 } = {}) {
+  static findAll({ type = null, ownerId = null, limit = 100, offset = 0 } = {}) {
     const db = getDb();
     let sql = 'SELECT * FROM documents WHERE is_deleted = 0';
     const params = [];
-    
+
     if (type) {
       sql += ' AND type = ?';
       params.push(type);
     }
-    
+    if (ownerId) {
+      sql += ' AND owner_id = ?';
+      params.push(ownerId);
+    }
+
     sql += ' ORDER BY updated_at DESC LIMIT ? OFFSET ?';
     params.push(limit, offset);
-    
+
     const stmt = db.prepare(sql);
     return stmt.all(...params);
   }
 
-  static update(id, { title, content }) {
+  static update(id, { title, content }, updatedBy = 'anonymous') {
     const db = getDb();
-    
+
     // Save version before updating
     const doc = this.findById(id);
     if (doc && content !== undefined) {
-      this.saveVersion(id, doc.content, 'anonymous');
+      this.saveVersion(id, doc.content, updatedBy);
     }
-    
+
     const updates = [];
     const params = [];
-    
+
     if (title !== undefined) {
       updates.push('title = ?');
       params.push(title);
@@ -64,16 +68,16 @@ class DocumentModel {
       updates.push('content = ?');
       params.push(content);
     }
-    
+
     if (updates.length === 0) return doc;
-    
+
     updates.push('updated_at = CURRENT_TIMESTAMP');
     params.push(id);
-    
+
     const sql = `UPDATE documents SET ${updates.join(', ')} WHERE id = ?`;
     const stmt = db.prepare(sql);
     stmt.run(...params);
-    
+
     return this.findById(id);
   }
 
