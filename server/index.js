@@ -1,11 +1,14 @@
 const express = require('express');
 const http = require('http');
+const cookieParser = require('cookie-parser');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const path = require('path');
 const { initDatabase } = require('./models/db');
 const documentRoutes = require('./routes/document');
 const collaborationRoutes = require('./routes/collaboration');
+const authRoutes = require('./routes/auth');
+const { authMiddleware } = require('./middleware/auth');
 const { setupYjsServer } = require('./services/yjsService');
 
 const app = express();
@@ -21,6 +24,8 @@ const io = new Server(server, {
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use(cookieParser());
+app.use(authMiddleware); // populates req.user from session cookie
 
 // Static files (production)
 if (process.env.NODE_ENV === 'production') {
@@ -40,6 +45,7 @@ try {
 app.set('io', io);
 
 // API Routes
+app.use('/api/auth', authRoutes);
 app.use('/api/documents', documentRoutes);
 app.use('/api/collaboration', collaborationRoutes);
 
